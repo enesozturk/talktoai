@@ -56,6 +56,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupDelegates()
         setupStateObservers()
         setupFloatingPanel()
+        setupDeviceChangeObserver()
+
+        // Apply saved microphone selection if any
+        applySelectedMicrophone()
         
         // Request permissions on first launch
         Task {
@@ -149,6 +153,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
+        // Microphone selection submenu
+        let microphoneSubmenu = NSMenu()
+
+        let microphoneMenuItem = NSMenuItem(title: "Microphone", action: nil, keyEquivalent: "")
+        microphoneMenuItem.submenu = microphoneSubmenu
+        microphoneMenuItem.tag = 401
+        menu.addItem(microphoneMenuItem)
+
+        menu.addItem(NSMenuItem.separator())
+
         // Auto-submit toggle
         let autoSubmitItem = NSMenuItem(
             title: "Auto-Submit (Press Enter)",
@@ -176,6 +190,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         statusMenu = menu
         self.statusItem?.menu = menu
+
+        // Populate microphone menu after menu is set
+        updateMicrophoneMenu()
     }
 
     private func updateProviderMenuState() {
@@ -239,6 +256,96 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let autoSubmitItem = statusMenu?.item(withTag: 301) {
             autoSubmitItem.state = config.autoSubmitEnabled ? .on : .off
         }
+    }
+
+    // MARK: - Microphone Selection
+
+    private func updateMicrophoneMenu() {
+        guard let microphoneMenuItem = statusMenu?.item(withTag: 401),
+              let submenu = microphoneMenuItem.submenu else { return }
+
+        submenu.removeAllItems()
+
+        // System Default option
+        let defaultItem = NSMenuItem(
+            title: "System Default",
+            action: #selector(selectSystemDefaultMicrophone),
+            keyEquivalent: ""
+        )
+        defaultItem.target = self
+        defaultItem.state = config.selectedMicrophoneUID == nil ? .on : .off
+        defaultItem.tag = 500
+        submenu.addItem(defaultItem)
+
+        submenu.addItem(NSMenuItem.separator())
+
+        // List available input devices
+        let devices = AudioDeviceManager.shared.getInputDevices()
+        let selectedUID = config.selectedMicrophoneUID
+
+        for (index, device) in devices.enumerated() {
+            let item = NSMenuItem(
+                title: device.name,
+                action: #selector(selectMicrophone(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = device
+            item.state = device.uid == selectedUID ? .on : .off
+            item.tag = 501 + index
+            submenu.addItem(item)
+        }
+
+        // Update the menu title to show current selection
+        if let selectedUID = selectedUID,
+           let device = devices.first(where: { $0.uid == selectedUID }) {
+            microphoneMenuItem.title = "Microphone: \(device.name)"
+        } else {
+            microphoneMenuItem.title = "Microphone: System Default"
+        }
+    }
+
+    @objc private func selectSystemDefaultMicrophone() {
+        config.selectedMicrophoneUID = nil
+        updateMicrophoneMenu()
+        Logger.info("Switched to system default microphone", category: .audio)
+    }
+
+    @objc private func selectMicrophone(_ sender: NSMenuItem) {
+        guard let device = sender.representedObject as? AudioDevice else { return }
+
+        config.selectedMicrophoneUID = device.uid
+
+        // Set as system default input device
+        AudioDeviceManager.shared.setDefaultInputDevice(device)
+
+        updateMicrophoneMenu()
+        Logger.info("Selected microphone: \(device.name)", category: .audio)
+    }
+
+    private func setupDeviceChangeObserver() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(audioDevicesDidChange),
+            name: AudioDeviceManager.devicesDidChangeNotification,
+            object: nil
+        )
+    }
+
+    @objc private func audioDevicesDidChange() {
+        Logger.info("Audio devices changed, updating menu", category: .audio)
+        updateMicrophoneMenu()
+    }
+
+    private func applySelectedMicrophone() {
+        // If user has a saved microphone preference, set it as the system default
+        guard let uid = config.selectedMicrophoneUID,
+              let device = AudioDeviceManager.shared.findDevice(byUID: uid) else {
+            return
+        }
+
+        AudioDeviceManager.shared.setDefaultInputDevice(device)
+        Logger.info("Applied saved microphone: \(device.name)", category: .audio)
     }
 
     private func setupDelegates() {

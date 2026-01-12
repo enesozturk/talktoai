@@ -54,6 +54,37 @@ final class TranscriberConfig {
         }
     }
 
+    // MARK: - Microphone Selection
+
+    private let selectedMicrophoneUIDKey = "selectedMicrophoneUID"
+
+    /// The UID of the selected microphone. nil means use system default.
+    var selectedMicrophoneUID: String? {
+        get {
+            return UserDefaults.standard.string(forKey: selectedMicrophoneUIDKey)
+        }
+        set {
+            if let uid = newValue {
+                UserDefaults.standard.set(uid, forKey: selectedMicrophoneUIDKey)
+                Logger.info("Selected microphone UID: \(uid)", category: .audio)
+            } else {
+                UserDefaults.standard.removeObject(forKey: selectedMicrophoneUIDKey)
+                Logger.info("Using system default microphone", category: .audio)
+            }
+        }
+    }
+
+    /// Returns the selected microphone device, or nil if using system default
+    var selectedMicrophone: AudioDevice? {
+        guard let uid = selectedMicrophoneUID else { return nil }
+        return AudioDeviceManager.shared.findDevice(byUID: uid)
+    }
+
+    /// Returns true if a specific microphone is selected (not system default)
+    var hasSelectedMicrophone: Bool {
+        selectedMicrophoneUID != nil
+    }
+
     // MARK: - Provider Selection
 
     var selectedProvider: TranscriberProvider {
