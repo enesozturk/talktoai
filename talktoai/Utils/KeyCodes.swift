@@ -42,6 +42,9 @@ enum KeyCodes {
     static let returnKey: UInt16 = UInt16(kVK_Return)
     static let tab: UInt16 = UInt16(kVK_Tab)
     static let delete: UInt16 = UInt16(kVK_Delete)
+
+    // Letter keys
+    static let keyK: UInt16 = UInt16(kVK_ANSI_K)  // 40
     
     /// Default push-to-talk key (Right Option)
     static let defaultPushToTalkKey: UInt16 = rightOption

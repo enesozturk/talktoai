@@ -105,7 +105,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Hotkey info
         let hotkeyItem = NSMenuItem(
-            title: "Hold \(KeyCodes.name(for: hotkeyManager.hotkeyCode)) to talk",
+            title: "Hold Fn + Shift + K to talk",
             action: nil,
             keyEquivalent: ""
         )

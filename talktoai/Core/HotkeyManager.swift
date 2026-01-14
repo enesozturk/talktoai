@@ -15,17 +15,19 @@ protocol HotkeyDelegate: AnyObject {
 }
 
 /// Manages global push-to-talk hotkey detection using CGEventTap
-/// Monitors key down/up events for the configured hotkey
+/// Monitors Fn + Shift + K for push-to-talk activation
 final class HotkeyManager {
-    
+
     weak var delegate: HotkeyDelegate?
-    
-    /// The key code to monitor (default: Right Option)
-    var hotkeyCode: UInt16 = KeyCodes.defaultPushToTalkKey
-    
+
     fileprivate var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
-    private var isKeyDown = false
+    private var isRecording = false
+
+    // Track modifier states
+    private var isFnDown = false
+    private var isShiftDown = false
+    private var isKDown = false
     
     init() {}
     
@@ -70,7 +72,7 @@ final class HotkeyManager {
         if let source = runLoopSource {
             CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
             CGEvent.tapEnable(tap: tap, enable: true)
-            Logger.info("Hotkey manager started, monitoring key: \(KeyCodes.name(for: hotkeyCode))", category: .hotkey)
+            Logger.info("Hotkey manager started, monitoring: Fn + Shift + K", category: .hotkey)
             return true
         }
         
@@ -89,79 +91,71 @@ final class HotkeyManager {
             
             eventTap = nil
             runLoopSource = nil
-            isKeyDown = false
-            
+            isRecording = false
+            isFnDown = false
+            isShiftDown = false
+            isKDown = false
+
             Logger.info("Hotkey manager stopped", category: .hotkey)
         }
     }
     
     /// Handle key event from the event tap
+    /// Monitors Fn + Shift + K for push-to-talk
+    /// Returns true if the event should be blocked (consumed)
     fileprivate func handleKeyEvent(_ event: CGEvent) -> Bool {
         let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
         let eventType = event.type
-        
-        // For modifier keys, we use flagsChanged event
-        if KeyCodes.isModifier(hotkeyCode) {
-            if eventType == .flagsChanged && keyCode == hotkeyCode {
-                // Check if the key is pressed or released by examining flags
-                let flags = event.flags
-                let isPressed = isModifierPressed(flags: flags, keyCode: hotkeyCode)
-                
-                if isPressed && !isKeyDown {
-                    isKeyDown = true
-                    Logger.debug("Hotkey pressed: \(KeyCodes.name(for: hotkeyCode))", category: .hotkey)
-                    DispatchQueue.main.async { [weak self] in
-                        self?.delegate?.didStartRecording()
-                    }
-                } else if !isPressed && isKeyDown {
-                    isKeyDown = false
-                    Logger.debug("Hotkey released: \(KeyCodes.name(for: hotkeyCode))", category: .hotkey)
-                    DispatchQueue.main.async { [weak self] in
-                        self?.delegate?.didStopRecording()
-                    }
-                }
+        let flags = event.flags
+        var shouldBlockEvent = false
+
+        // Track Fn and Shift via flagsChanged events
+        if eventType == .flagsChanged {
+            // Track Fn key
+            if keyCode == KeyCodes.function {
+                isFnDown = flags.contains(.maskSecondaryFn)
             }
-        } else {
-            // For regular keys, use keyDown/keyUp
-            if keyCode == hotkeyCode {
-                if eventType == .keyDown && !isKeyDown {
-                    isKeyDown = true
-                    Logger.debug("Hotkey pressed: \(KeyCodes.name(for: hotkeyCode))", category: .hotkey)
-                    DispatchQueue.main.async { [weak self] in
-                        self?.delegate?.didStartRecording()
-                    }
-                } else if eventType == .keyUp && isKeyDown {
-                    isKeyDown = false
-                    Logger.debug("Hotkey released: \(KeyCodes.name(for: hotkeyCode))", category: .hotkey)
-                    DispatchQueue.main.async { [weak self] in
-                        self?.delegate?.didStopRecording()
-                    }
+            // Track Shift key (either left or right)
+            if keyCode == KeyCodes.leftShift || keyCode == KeyCodes.rightShift {
+                isShiftDown = flags.contains(.maskShift)
+            }
+        }
+
+        // Track K key via keyDown/keyUp events
+        if keyCode == KeyCodes.keyK {
+            if eventType == .keyDown {
+                isKDown = true
+                // Block K key when Fn + Shift are held to prevent typing
+                if isFnDown && isShiftDown {
+                    shouldBlockEvent = true
+                }
+            } else if eventType == .keyUp {
+                isKDown = false
+                // Also block the key up event when in hotkey mode
+                if isFnDown && isShiftDown {
+                    shouldBlockEvent = true
                 }
             }
         }
-        
-        // Return false to allow the event to pass through
-        return false
-    }
-    
-    /// Check if a specific modifier key is pressed based on flags
-    private func isModifierPressed(flags: CGEventFlags, keyCode: UInt16) -> Bool {
-        switch keyCode {
-        case KeyCodes.leftShift, KeyCodes.rightShift:
-            return flags.contains(.maskShift)
-        case KeyCodes.leftControl, KeyCodes.rightControl:
-            return flags.contains(.maskControl)
-        case KeyCodes.leftOption, KeyCodes.rightOption:
-            return flags.contains(.maskAlternate)
-        case KeyCodes.leftCommand, KeyCodes.rightCommand:
-            return flags.contains(.maskCommand)
-        case KeyCodes.function:
-            return flags.contains(.maskSecondaryFn)
-        case KeyCodes.capsLock:
-            return flags.contains(.maskAlphaShift)
-        default:
-            return false
+
+        // Check if all three keys are pressed
+        let allPressed = isFnDown && isShiftDown && isKDown
+
+        if allPressed && !isRecording {
+            isRecording = true
+            Logger.debug("Fn + Shift + K pressed - starting recording", category: .hotkey)
+            DispatchQueue.main.async { [weak self] in
+                self?.delegate?.didStartRecording()
+            }
+        } else if !allPressed && isRecording {
+            isRecording = false
+            Logger.debug("Hotkey released - stopping recording", category: .hotkey)
+            DispatchQueue.main.async { [weak self] in
+                self?.delegate?.didStopRecording()
+            }
         }
+
+        return shouldBlockEvent
     }
 }
 
@@ -188,10 +182,14 @@ private func hotkeyEventCallback(
     guard let userInfo = userInfo else {
         return Unmanaged.passUnretained(event)
     }
-    
+
     let manager = Unmanaged<HotkeyManager>.fromOpaque(userInfo).takeUnretainedValue()
-    _ = manager.handleKeyEvent(event)
-    
-    // Always pass the event through
+    let shouldBlock = manager.handleKeyEvent(event)
+
+    // Block the event if it's part of our hotkey combo (prevents typing K)
+    if shouldBlock {
+        return nil
+    }
+
     return Unmanaged.passUnretained(event)
 }
